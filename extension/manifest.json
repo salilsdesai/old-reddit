@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "Old Reddit",
+  "version": "0.1.0",
+  "description": "Restyle reddit.com subreddit feeds and comment threads to look like classic old Reddit.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.reddit.com/r/*",
+        "*://reddit.com/r/*"
+      ],
+      "css": ["styles/hide-new.css"],
+      "js": ["content/early-hide.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "*://*.reddit.com/r/*",
+        "*://reddit.com/r/*"
+      ],
+      "css": ["styles/old-reddit.css"],
+      "js": [
+        "content/time.js",
+        "content/router.js",
+        "content/api.js",
+        "content/scrape-feed.js",
+        "content/scrape-comments.js",
+        "content/expando.js",
+        "content/render-shell.js",
+        "content/render-feed.js",
+        "content/render-comments.js",
+        "content/main.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "*://*.reddit.com/*",
+    "*://reddit.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["styles/*", "icons/*"],
+      "matches": ["*://*.reddit.com/*", "*://reddit.com/*"]
+    }
+  ]
+}

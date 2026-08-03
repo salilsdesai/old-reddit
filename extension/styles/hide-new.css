@@ -1,0 +1,36 @@
+/* Hide Shreddit UI immediately to avoid FOUC. Our root is exempt.
+   Use visually-hidden instead of display:none so Reddit's JS can still run. */
+html.old-reddit-active,
+html.old-reddit-pending {
+  background: #fff !important;
+}
+
+html.old-reddit-active body,
+html.old-reddit-pending body {
+  overflow: auto !important;
+}
+
+html.old-reddit-active body > *:not(#old-reddit-root),
+html.old-reddit-pending body > *:not(#old-reddit-root) {
+  position: absolute !important;
+  left: -10000px !important;
+  top: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+html.old-reddit-active #old-reddit-root,
+html.old-reddit-pending #old-reddit-root {
+  display: block !important;
+  position: relative !important;
+  left: auto !important;
+  top: auto !important;
+  width: auto !important;
+  height: auto !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  overflow: visible !important;
+}
