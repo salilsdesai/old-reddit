@@ -163,6 +163,27 @@ window.OldReddit = window.OldReddit || {};
     return res.text();
   }
 
+  function materializeMorePartials(nodes) {
+    for (const n of nodes || []) {
+      if (n.kind !== "comment") continue;
+      n.replies = Array.isArray(n.replies) ? n.replies : [];
+      for (const m of n._morePartials || []) {
+        n.replies.push({
+          kind: "more",
+          id: `more_${Math.random().toString(36).slice(2, 8)}`,
+          count: m.count || 0,
+          children: [],
+          depth: (n.depth || 0) + 1,
+          parentId: n.id,
+          _partial: m,
+        });
+      }
+      delete n._morePartials;
+      materializeMorePartials(n.replies);
+    }
+    return nodes;
+  }
+
   function parseCommentsFromHtml(html) {
     const doc = new DOMParser().parseFromString(html, "text/html");
     const out = [];
@@ -232,15 +253,17 @@ window.OldReddit = window.OldReddit || {};
       }
     }
 
+    // Nested more-comments live on each comment as _morePartials; only keep
+    // partials that aren't nested under a shreddit-comment as top-level mores.
     const mores = [];
     for (const partial of doc.querySelectorAll("faceplate-partial")) {
       const src = partial.getAttribute("src");
-      if (src && src.includes("more-comments")) {
-        mores.push(partialToJob(partial));
-      }
+      if (!src || !src.includes("more-comments")) continue;
+      if (partial.closest("shreddit-comment")) continue;
+      mores.push(partialToJob(partial));
     }
-    // Regex fallback for cursor-bearing partials
-    if (!mores.length) {
+    // Regex fallback for cursor-bearing partials (treat as top-level)
+    if (!mores.length && !out.some((c) => (c._morePartials || []).length)) {
       const pre =
         /<faceplate-partial([^>]*more-comments[^>]*)>([\s\S]*?)<\/faceplate-partial>/gi;
       let pm;
@@ -249,16 +272,18 @@ window.OldReddit = window.OldReddit || {};
         const body = pm[2];
         const srcM = attrs.match(/src="([^"]+)"/i);
         if (!srcM) continue;
-        const cursorM = body.match(/name="cursor"[^>]*value="([^"]*)"/i) ||
+        const cursorM =
+          body.match(/name="cursor"[^>]*value="([^"]*)"/i) ||
           body.match(/value="([^"]*)"[^>]*name="cursor"/i);
         mores.push({
           src: srcM[1].replace(/&amp;/g, "&"),
-          method: /method="post"/i.test(attrs) ? "post" : "post",
+          method: "post",
           count: null,
           form: cursorM ? { cursor: cursorM[1] } : {},
         });
       }
     }
+
     return { comments: out, mores };
   }
 
@@ -330,16 +355,8 @@ window.OldReddit = window.OldReddit || {};
       }
     }
 
-    // Strip scrape-only fields
-    const clean = (nodes) => {
-      for (const n of nodes || []) {
-        if (n.kind === "comment") {
-          delete n._morePartials;
-          clean(n.replies);
-        }
-      }
-    };
-    clean(comments);
+    // Any _morePartials not queued (e.g. past depthLimit) become clickable stubs
+    materializeMorePartials(comments);
     return comments;
   }
 
@@ -432,6 +449,7 @@ window.OldReddit = window.OldReddit || {};
     loadCommentsViaDom,
     fetchPartialHtml,
     parseCommentsFromHtml,
+    materializeMorePartials,
     attachDomPartialsToMores,
     waitForComments,
     partialToJob,

@@ -93,6 +93,64 @@ window.OldReddit = window.OldReddit || {};
     return el;
   }
 
+  function collectLoadedIds(nodes, into = new Set()) {
+    for (const n of nodes || []) {
+      if (n.kind === "comment") {
+        into.add(n.id);
+        into.add(n.commentId);
+        into.add(String(n.id || "").replace(/^t1_/, ""));
+        collectLoadedIds(n.replies, into);
+      }
+      // Nested "more" stubs are still pending — don't treat their children as loaded
+    }
+    return into;
+  }
+
+  function buildForestFromThings(things, { requestedIds = [], parentIdHint = null } = {}) {
+    const byId = new Map();
+    const comments = [];
+    const mores = [];
+    for (const t of things || []) {
+      if (t.kind === "more") {
+        mores.push(t);
+        continue;
+      }
+      if (t.kind !== "comment") continue;
+      t.replies = Array.isArray(t.replies) ? t.replies : [];
+      byId.set(t.id, t);
+      comments.push(t);
+    }
+
+    const roots = [];
+    for (const t of comments) {
+      const parent = byId.get(t.parentId);
+      if (parent && parent.id !== t.id) parent.replies.push(t);
+      else roots.push(t);
+    }
+    for (const m of mores) {
+      const parent = byId.get(m.parentId);
+      if (parent) parent.replies.push(m);
+      else roots.push(m);
+    }
+
+    // Keep a stub for child IDs the API didn't return (classic morechildren behavior)
+    const loaded = collectLoadedIds(roots);
+    const remaining = (requestedIds || []).filter((id) => {
+      const bare = String(id).replace(/^t1_/, "");
+      return !loaded.has(id) && !loaded.has(bare) && !loaded.has(`t1_${bare}`);
+    });
+    if (remaining.length) {
+      roots.push({
+        kind: "more",
+        id: `more_${Math.random().toString(36).slice(2, 8)}`,
+        count: remaining.length,
+        children: remaining,
+        parentId: parentIdHint || null,
+      });
+    }
+    return roots;
+  }
+
   function renderMore(node, { linkId, sort, subreddit }) {
     const el = document.createElement("div");
     el.className = "thing morechildren";
@@ -127,6 +185,10 @@ window.OldReddit = window.OldReddit || {};
             if (nodeEl && nodeEl.nodeType === 1) {
               frag.appendChild(nodeEl);
               inserted += 1;
+            } else if (nodeEl?.childNodes?.length) {
+              // DocumentFragment with children (shouldn't happen for valid nodes)
+              frag.appendChild(nodeEl);
+              inserted += 1;
             }
           }
         };
@@ -140,6 +202,8 @@ window.OldReddit = window.OldReddit || {};
               node._partial.form || null
             );
             const { comments: fetched, mores } = OR.scrapeComments.parseCommentsFromHtml(html);
+            // Nested faceplate-partials must become load-more stubs under their parents
+            OR.scrapeComments.materializeMorePartials(fetched);
             if (fetched.length || (mores && mores.length)) {
               usedPartial = true;
               appendNodes(fetched);
@@ -203,33 +267,17 @@ window.OldReddit = window.OldReddit || {};
                 null
               );
               const parsed = OR.scrapeComments.parseCommentsFromHtml(html);
+              OR.scrapeComments.materializeMorePartials(parsed.comments || []);
               things = parsed.comments || [];
             } catch (err) {
               console.warn("[OldReddit] shreddit comment fallback failed", err);
             }
           }
 
-          const byId = new Map();
-          const roots = [];
-          for (const t of things) {
-            if (t.kind === "comment") {
-              t.replies = Array.isArray(t.replies) ? t.replies : [];
-              byId.set(t.id, t);
-            }
-          }
-          for (const t of things) {
-            if (t.kind === "more") {
-              roots.push(t);
-              continue;
-            }
-            if (t.kind !== "comment") continue;
-            const parent = byId.get(t.parentId);
-            if (parent && parent.id !== t.id) {
-              parent.replies.push(t);
-            } else {
-              roots.push(t);
-            }
-          }
+          const roots = buildForestFromThings(things, {
+            requestedIds: ids,
+            parentIdHint: node.parentId || null,
+          });
           appendNodes(roots);
         }
 
