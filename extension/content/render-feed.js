@@ -22,9 +22,15 @@ window.OldReddit = window.OldReddit || {};
     row.dataset.permalink = post.permalink;
 
     const thumbHref = post.postType === "text" ? post.permalink : post.url || post.permalink;
-    const hasThumb = !!(post.thumbnail && post.postType !== "text");
+    const thumbUrl =
+      post.thumbnail ||
+      post.media?.poster ||
+      (post.media?.type === "image" ? post.media.url : null) ||
+      post.media?.items?.[0]?.url ||
+      null;
+    const hasThumb = !!(thumbUrl && post.postType !== "text");
     const thumbInner = hasThumb
-      ? `<img src="${escapeAttr(post.thumbnail)}" width="70" height="70" alt="">`
+      ? `<img src="${escapeAttr(thumbUrl)}" width="54" height="54" alt="">`
       : `<div class="or-thumb-placeholder ${post.postType}"></div>`;
 
     const flair = post.flair
@@ -42,7 +48,6 @@ window.OldReddit = window.OldReddit || {};
     const timeTitle = absoluteTitle(post.created);
 
     row.innerHTML = `
-      <p class="parent"></p>
       <span class="rank">${rank || ""}</span>
       <div class="midcol unvoted">
         <div class="arrow up" role="presentation"></div>
@@ -59,7 +64,6 @@ window.OldReddit = window.OldReddit || {};
           <p class="title">
             ${flair}
             <a class="title may-blank" href="${escapeAttr(post.permalink)}">${escapeHtml(post.title)}</a>
-            <span class="domain">(<a href="/domain/${escapeAttr(post.domain)}/">${escapeHtml(post.domain)}</a>)</span>
           </p>
           ${expandoBtn}
           <p class="tagline">
@@ -78,7 +82,6 @@ window.OldReddit = window.OldReddit || {};
         </div>
         <div class="expando" style="display:none"></div>
       </div>
-      <div class="child"></div>
       <div class="clearleft"></div>
     `;
 
@@ -131,8 +134,8 @@ window.OldReddit = window.OldReddit || {};
               placeholder.replaceWith(
                 Object.assign(document.createElement("img"), {
                   src: p.thumbnail,
-                  width: 70,
-                  height: 70,
+                  width: 54,
+                  height: 54,
                   alt: "",
                 })
               );
@@ -142,8 +145,8 @@ window.OldReddit = window.OldReddit || {};
                 thumb.innerHTML = "";
                 const image = document.createElement("img");
                 image.src = p.thumbnail;
-                image.width = 70;
-                image.height = 70;
+                image.width = 54;
+                image.height = 54;
                 image.alt = "";
                 thumb.appendChild(image);
               }
@@ -172,13 +175,31 @@ window.OldReddit = window.OldReddit || {};
       after = page.after;
     } catch (err) {
       console.warn("[OldReddit] listing JSON failed, falling back to DOM scrape", err);
-      // Wait briefly for Shreddit to hydrate posts
       const start = Date.now();
       while (Date.now() - start < 10000 && !OR.scrapeFeed.collectFeedPosts().length) {
         await new Promise((r) => setTimeout(r, 250));
       }
       addPosts(OR.scrapeFeed.collectFeedPosts());
     }
+
+    // Enrich missing thumbnails via shreddit HTML cards + live DOM
+    const enrichThumbs = async () => {
+      try {
+        const page = await OR.api.fetchShredditListing({
+          subreddit: route.subreddit,
+          sort: route.sort,
+          t: route.t,
+        });
+        addPosts(page.posts);
+      } catch (err) {
+        console.warn("[OldReddit] shreddit listing enrich failed", err);
+      }
+      addPosts(OR.scrapeFeed.collectFeedPosts());
+    };
+    enrichThumbs();
+    // Second pass after media hydrates in the hidden Shreddit feed
+    setTimeout(enrichThumbs, 1500);
+    setTimeout(enrichThumbs, 4000);
 
     if (!seen.size) {
       OR.shell.setStatus(status, "Waiting for posts to load…");

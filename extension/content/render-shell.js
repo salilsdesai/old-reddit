@@ -38,6 +38,38 @@ window.OldReddit = window.OldReddit || {};
     { value: "qa", label: "q&a" },
   ];
 
+  function bindTopTimeSelect(root, subreddit) {
+    const topSelect = root.querySelector("#or-top-time");
+    if (!topSelect) return;
+    topSelect.addEventListener("change", () => {
+      const next = topSelect.value;
+      location.assign(`/r/${encodeURIComponent(subreddit)}/top/?t=${encodeURIComponent(next)}`);
+    });
+  }
+
+  function bindCommentSortSelect(root) {
+    const sortSelect = root.querySelector("#or-comment-sort");
+    if (!sortSelect) return;
+    sortSelect.addEventListener("change", () => {
+      const url = new URL(location.href);
+      url.searchParams.set("sort", sortSelect.value);
+      location.assign(url.toString());
+    });
+  }
+
+  function commentSortMenuHtml(commentSort) {
+    const options = COMMENT_SORTS.map(
+      (opt) =>
+        `<option value="${opt.value}" ${opt.value === commentSort ? "selected" : ""}>${opt.label}</option>`
+    ).join("");
+    return `
+      <div class="or-menu-bar">
+        <label class="or-dropdown-label">sorted by:
+          <select id="or-comment-sort" class="or-dropdown">${options}</select>
+        </label>
+      </div>`;
+  }
+
   function renderShell(root, { subreddit, sort = "hot", t = null, mode, commentSort = "confidence" }) {
     const tabs = ["hot", "new", "rising", "controversial", "top"];
     const tabHtml = tabs
@@ -67,18 +99,8 @@ window.OldReddit = window.OldReddit || {};
         </div>`;
     }
 
-    if (mode === "comments") {
-      const options = COMMENT_SORTS.map(
-        (opt) =>
-          `<option value="${opt.value}" ${opt.value === commentSort ? "selected" : ""}>${opt.label}</option>`
-      ).join("");
-      extraMenus = `
-        <div class="or-menu-bar">
-          <label class="or-dropdown-label">sorted by:
-            <select id="or-comment-sort" class="or-dropdown">${options}</select>
-          </label>
-        </div>`;
-    }
+    const tabmenuHtml =
+      mode === "feed" ? `<ul class="tabmenu">${tabHtml}</ul>` : "";
 
     root.innerHTML = `
       <div id="header" role="banner">
@@ -89,7 +111,7 @@ window.OldReddit = window.OldReddit || {};
           <span class="hover pagename redditname">
             <a href="/r/${OR.expando.escapeAttr(subreddit)}/">r/${OR.expando.escapeHtml(subreddit)}</a>
           </span>
-          <ul class="tabmenu">${tabHtml}</ul>
+          ${tabmenuHtml}
         </div>
       </div>
       <div class="or-status" id="or-status" hidden></div>
@@ -99,26 +121,14 @@ window.OldReddit = window.OldReddit || {};
       </div>
     `;
 
-    const topSelect = root.querySelector("#or-top-time");
-    if (topSelect) {
-      topSelect.addEventListener("change", () => {
-        const next = topSelect.value;
-        location.assign(`/r/${encodeURIComponent(subreddit)}/top/?t=${encodeURIComponent(next)}`);
-      });
-    }
-
-    const sortSelect = root.querySelector("#or-comment-sort");
-    if (sortSelect) {
-      sortSelect.addEventListener("change", () => {
-        const url = new URL(location.href);
-        url.searchParams.set("sort", sortSelect.value);
-        location.assign(url.toString());
-      });
-    }
+    bindTopTimeSelect(root, subreddit);
 
     return {
       siteTable: root.querySelector("#siteTable"),
       status: root.querySelector("#or-status"),
+      commentSort,
+      commentSortMenuHtml: () => commentSortMenuHtml(commentSort),
+      bindCommentSortSelect: () => bindCommentSortSelect(root),
     };
   }
 
@@ -134,5 +144,13 @@ window.OldReddit = window.OldReddit || {};
     el.classList.toggle("or-status-error", error);
   }
 
-  OR.shell = { createRoot, renderShell, setStatus, TOP_TIMES, COMMENT_SORTS };
+  OR.shell = {
+    createRoot,
+    renderShell,
+    setStatus,
+    TOP_TIMES,
+    COMMENT_SORTS,
+    commentSortMenuHtml,
+    bindCommentSortSelect,
+  };
 })(window.OldReddit);

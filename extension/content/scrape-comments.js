@@ -6,6 +6,25 @@ window.OldReddit = window.OldReddit || {};
     return slot || null;
   }
 
+  function partialToJob(partial) {
+    const src = (partial.getAttribute("src") || "").replace(/&amp;/g, "&");
+    const form = {};
+    for (const input of partial.querySelectorAll("input[name]")) {
+      form[input.getAttribute("name")] = input.getAttribute("value") || input.value || "";
+    }
+    // Also read cursor from button wrappers if present
+    const cursorEl = partial.querySelector('[name="cursor"]');
+    if (cursorEl && form.cursor == null) {
+      form.cursor = cursorEl.getAttribute("value") || cursorEl.value || "";
+    }
+    return {
+      src,
+      method: (partial.getAttribute("method") || "post").toLowerCase(),
+      count: Number(partial.querySelector("faceplate-number")?.textContent || 0) || null,
+      form,
+    };
+  }
+
   function commentFromShredditEl(el) {
     const id = el.getAttribute("thingid") || el.getAttribute("id");
     if (!id || !id.startsWith("t1_")) return null;
@@ -59,11 +78,7 @@ window.OldReddit = window.OldReddit || {};
       if (partial.closest("shreddit-comment") !== el) continue;
       const src = partial.getAttribute("src");
       if (src && src.includes("more-comments")) {
-        morePartials.push({
-          src: src.replace(/&amp;/g, "&"),
-          method: (partial.getAttribute("method") || "post").toLowerCase(),
-          count: Number(partial.querySelector("faceplate-number")?.textContent || 0) || null,
-        });
+        morePartials.push(partialToJob(partial));
       }
     }
 
@@ -115,27 +130,35 @@ window.OldReddit = window.OldReddit || {};
     )) {
       const src = partial.getAttribute("src");
       if (!src || !src.includes("more-comments")) continue;
-      topMore.push({
-        src: src.replace(/&amp;/g, "&"),
-        method: (partial.getAttribute("method") || "post").toLowerCase(),
-        count: Number(partial.querySelector("faceplate-number")?.textContent || 0) || null,
-      });
+      topMore.push(partialToJob(partial));
     }
 
     return { comments: top, topMore };
   }
 
-  async function fetchPartialHtml(src, method = "post") {
-    const url = src.startsWith("http") ? src : new URL(src, location.origin).pathname + new URL(src, location.origin).search;
-    const res = await fetch(url, {
-      method: method.toUpperCase(),
+  async function fetchPartialHtml(src, method = "post", form = null) {
+    const resolved = new URL(src, location.origin);
+    const url = resolved.pathname + resolved.search;
+    const methodUpper = (method || "post").toUpperCase();
+    const headers = {
+      Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+    };
+    const opts = {
+      method: methodUpper,
       credentials: "include",
-      headers: {
-        Accept: "text/html",
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: method.toLowerCase() === "post" ? "" : undefined,
-    });
+      headers,
+    };
+    if (methodUpper === "POST") {
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+      const params = new URLSearchParams();
+      if (form && typeof form === "object") {
+        for (const [k, v] of Object.entries(form)) {
+          if (v != null && v !== "") params.set(k, v);
+        }
+      }
+      opts.body = params.toString();
+    }
+    const res = await fetch(url, opts);
     if (!res.ok) throw new Error(`partial ${res.status}`);
     return res.text();
   }
@@ -144,10 +167,10 @@ window.OldReddit = window.OldReddit || {};
     const doc = new DOMParser().parseFromString(html, "text/html");
     const out = [];
     const seen = new Set();
+
+    // Prefer live DOM-like attribute parsing
     for (const el of doc.querySelectorAll("shreddit-comment")) {
-      // Only top-level of this fragment
       if (el.parentElement?.closest("shreddit-comment")) continue;
-      // Must have real identity attrs in the markup
       if (!el.getAttribute("thingid")?.startsWith("t1_")) continue;
       if (!el.getAttribute("author") && !el.getAttribute("created")) continue;
       const c = commentFromShredditEl(el);
@@ -156,15 +179,83 @@ window.OldReddit = window.OldReddit || {};
         out.push(c);
       }
     }
+
+    // Regex fallback if custom elements came through stripped
+    if (!out.length) {
+      const re =
+        /<shreddit-comment\b([^>]*thingid="(t1_[^"]+)"[^>]*)>/gi;
+      let m;
+      while ((m = re.exec(html))) {
+        const attrs = m[1];
+        const id = m[2];
+        if (seen.has(id)) continue;
+        const get = (name) => {
+          const mm = attrs.match(new RegExp(`${name}="([^"]*)"`, "i"));
+          return mm ? mm[1] : null;
+        };
+        const author = get("author");
+        const created = get("created");
+        if (!author && !created) continue;
+        seen.add(id);
+        out.push({
+          kind: "comment",
+          id,
+          commentId: id.replace(/^t1_/, ""),
+          author: author || "[deleted]",
+          score: Number(get("score") || 0),
+          created: created || "",
+          body: "",
+          bodyHtml: "",
+          permalink: get("permalink") || "",
+          depth: Number(get("depth") || 0),
+          parentId: get("parentid"),
+          postId: get("postid"),
+          stickied: false,
+          isSubmitter: false,
+          replies: [],
+          _morePartials: [],
+        });
+      }
+      // Try to attach bodies from rtjson blocks
+      for (const c of out) {
+        const bodyRe = new RegExp(
+          `id="${c.id}-(?:comment|post)-rtjson-content"[^>]*>([\\s\\S]*?)</div>`,
+          "i"
+        );
+        const bm = html.match(bodyRe);
+        if (bm) {
+          c.bodyHtml = `<div class="md">${bm[1]}</div>`;
+          const tmp = document.createElement("div");
+          tmp.innerHTML = bm[1];
+          c.body = tmp.textContent?.trim() || "";
+        }
+      }
+    }
+
     const mores = [];
     for (const partial of doc.querySelectorAll("faceplate-partial")) {
       const src = partial.getAttribute("src");
       if (src && src.includes("more-comments")) {
-        // Prefer partials not nested under a comment we already parsed as child-owned
+        mores.push(partialToJob(partial));
+      }
+    }
+    // Regex fallback for cursor-bearing partials
+    if (!mores.length) {
+      const pre =
+        /<faceplate-partial([^>]*more-comments[^>]*)>([\s\S]*?)<\/faceplate-partial>/gi;
+      let pm;
+      while ((pm = pre.exec(html))) {
+        const attrs = pm[1];
+        const body = pm[2];
+        const srcM = attrs.match(/src="([^"]+)"/i);
+        if (!srcM) continue;
+        const cursorM = body.match(/name="cursor"[^>]*value="([^"]*)"/i) ||
+          body.match(/value="([^"]*)"[^>]*name="cursor"/i);
         mores.push({
-          src: src.replace(/&amp;/g, "&"),
-          method: (partial.getAttribute("method") || "post").toLowerCase(),
-          count: Number(partial.querySelector("faceplate-number")?.textContent || 0) || null,
+          src: srcM[1].replace(/&amp;/g, "&"),
+          method: /method="post"/i.test(attrs) ? "post" : "post",
+          count: null,
+          form: cursorM ? { cursor: cursorM[1] } : {},
         });
       }
     }
@@ -204,7 +295,7 @@ window.OldReddit = window.OldReddit || {};
       }
       try {
         requests += 1;
-        const html = await fetchPartialHtml(job.partial.src, job.partial.method);
+        const html = await fetchPartialHtml(job.partial.src, job.partial.method, job.partial.form);
         const { comments: fetched, mores } = parseCommentsFromHtml(html);
         const targetList = job.parent ? (job.parent.replies = job.parent.replies || []) : comments;
         for (const c of fetched) {
@@ -297,6 +388,42 @@ window.OldReddit = window.OldReddit || {};
     return { post, comments };
   }
 
+  function attachDomPartialsToMores(comments) {
+    try {
+      // Only attach to more stubs that have no children IDs (JSON morechildren won't help)
+      const unused = [];
+      for (const partial of document.querySelectorAll("faceplate-partial")) {
+        const src = partial.getAttribute("src");
+        if (!src || !src.includes("more-comments")) continue;
+        unused.push(partialToJob(partial));
+      }
+
+      const walk = (nodes) => {
+        for (const n of nodes || []) {
+          if (
+            n.kind === "more" &&
+            !n._partial &&
+            !(n.children && n.children.length) &&
+            unused.length
+          ) {
+            const idx = unused.findIndex((p) => p.form && p.form.cursor);
+            const job = unused.splice(idx >= 0 ? idx : 0, 1)[0];
+            if (job) {
+              n._partial = job;
+              if (!n.count && job.count) n.count = job.count;
+            }
+          } else if (n.kind === "comment") {
+            walk(n.replies);
+          }
+        }
+      };
+      walk(comments);
+    } catch (err) {
+      console.warn("[OldReddit] attachDomPartialsToMores failed", err);
+    }
+    return comments;
+  }
+
   OR.scrapeComments = {
     commentFromShredditEl,
     scrapeOpPost,
@@ -305,5 +432,8 @@ window.OldReddit = window.OldReddit || {};
     loadCommentsViaDom,
     fetchPartialHtml,
     parseCommentsFromHtml,
+    attachDomPartialsToMores,
+    waitForComments,
+    partialToJob,
   };
 })(window.OldReddit);

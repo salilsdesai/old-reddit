@@ -4,6 +4,16 @@ Chrome extension that restyles `reddit.com` subreddit feeds and comment threads 
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for design details.
 
+## Screenshots
+
+**Subreddit home**
+
+![Subreddit home](./screenshots/home.png)
+
+**Post comments**
+
+![Post comments](./screenshots/post.png)
+
 ## Install (unpacked)
 
 1. Open `chrome://extensions`

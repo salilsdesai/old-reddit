@@ -24,12 +24,12 @@ window.OldReddit = window.OldReddit || {};
     return true;
   }
 
-  function renderComment(node, { linkId, sort }) {
+  function renderComment(node, { linkId, sort, subreddit }) {
     const { escapeHtml, escapeAttr, decodeHtml } = OR.expando;
     const { relativeTime, absoluteTitle } = OR.time;
 
     if (node.kind === "more") {
-      return renderMore(node, { linkId, sort });
+      return renderMore(node, { linkId, sort, subreddit });
     }
     if (!isValidComment(node)) return document.createDocumentFragment();
 
@@ -71,7 +71,7 @@ window.OldReddit = window.OldReddit || {};
 
     const childListing = el.querySelector(".child > .sitetable");
     for (const reply of node.replies || []) {
-      const child = renderComment(reply, { linkId, sort });
+      const child = renderComment(reply, { linkId, sort, subreddit });
       if (child.childNodes?.length || child.nodeType === 1) childListing.appendChild(child);
     }
 
@@ -93,7 +93,7 @@ window.OldReddit = window.OldReddit || {};
     return el;
   }
 
-  function renderMore(node, { linkId, sort }) {
+  function renderMore(node, { linkId, sort, subreddit }) {
     const el = document.createElement("div");
     el.className = "thing morechildren";
     el.dataset.type = "morechildren";
@@ -105,7 +105,7 @@ window.OldReddit = window.OldReddit || {};
 
     el.innerHTML = `
       <span class="morecomments">
-        <a href="javascript:void(0)" class="button or-more-btn">${label}</a>
+        <a href="javascript:void(0)" class="or-more-btn">${label}</a>
       </span>
     `;
 
@@ -121,42 +121,99 @@ window.OldReddit = window.OldReddit || {};
         const frag = document.createDocumentFragment();
         let inserted = 0;
 
-        if (node._partial?.src) {
-          const html = await OR.scrapeComments.fetchPartialHtml(
-            node._partial.src,
-            node._partial.method || "post"
-          );
-          let { comments: fetched } = OR.scrapeComments.parseCommentsFromHtml(html);
-          // Optionally deepen one level of nested partials inside fetched tree
-          fetched = await OR.scrapeComments.deepenForest(fetched, {
-            depthLimit: 6,
-            maxRequests: 8,
-            topMore: [],
-          });
-          for (const t of fetched) {
-            const nodeEl = renderComment(t, { linkId, sort });
-            if (nodeEl.nodeType === 1) {
+        const appendNodes = (nodes) => {
+          for (const t of nodes || []) {
+            const nodeEl = renderComment(t, { linkId, sort, subreddit });
+            if (nodeEl && nodeEl.nodeType === 1) {
               frag.appendChild(nodeEl);
               inserted += 1;
             }
           }
-        } else {
-          const ids = (node.children || []).slice(0, 100);
-          if (!ids.length) {
-            el.remove();
-            return;
+        };
+
+        let usedPartial = false;
+        if (node._partial?.src) {
+          try {
+            const html = await OR.scrapeComments.fetchPartialHtml(
+              node._partial.src,
+              node._partial.method || "post",
+              node._partial.form || null
+            );
+            const { comments: fetched, mores } = OR.scrapeComments.parseCommentsFromHtml(html);
+            if (fetched.length || (mores && mores.length)) {
+              usedPartial = true;
+              appendNodes(fetched);
+              for (const m of mores || []) {
+                appendNodes([
+                  {
+                    kind: "more",
+                    id: `more_${Math.random().toString(36).slice(2, 8)}`,
+                    count: m.count || 0,
+                    children: [],
+                    _partial: m,
+                  },
+                ]);
+              }
+            }
+          } catch (err) {
+            console.warn("[OldReddit] more-comments partial failed, trying API", err);
           }
-          const things = await OR.api.fetchMoreChildren({
-            linkId,
-            children: ids,
-            sort,
-            depth: 6,
-          });
+        }
+
+        if (!usedPartial) {
+          const ids = (node.children || []).slice(0, 100);
+          let things = [];
+          if (ids.length) {
+            try {
+              things = await OR.api.fetchMoreChildren({
+                linkId,
+                children: ids,
+                sort,
+                depth: 8,
+                moreId: node.id,
+              });
+            } catch (err) {
+              console.warn("[OldReddit] morechildren API failed", err);
+            }
+          }
+
+          // Fallback: fetch a branch starting at the first missing child
+          if (!things.length && ids.length && subreddit) {
+            const postId = String(linkId).replace(/^t3_/, "");
+            try {
+              things = await OR.api.fetchCommentBranch({
+                subreddit,
+                postId,
+                commentId: ids[0],
+                sort,
+                depth: 8,
+              });
+            } catch (err) {
+              console.warn("[OldReddit] comment branch fallback failed", err);
+            }
+          }
+
+          // Fallback: shreddit single-comment HTML
+          if (!things.length && ids.length && subreddit) {
+            const cid = String(ids[0]).replace(/^t1_/, "");
+            try {
+              const html = await OR.scrapeComments.fetchPartialHtml(
+                `/svc/shreddit/comment/t1_${cid}?depth=5&subredditName=${encodeURIComponent(subreddit)}`,
+                "get",
+                null
+              );
+              const parsed = OR.scrapeComments.parseCommentsFromHtml(html);
+              things = parsed.comments || [];
+            } catch (err) {
+              console.warn("[OldReddit] shreddit comment fallback failed", err);
+            }
+          }
+
           const byId = new Map();
           const roots = [];
           for (const t of things) {
-            if (t.kind === "comment" && isValidComment(t)) {
-              t.replies = t.replies || [];
+            if (t.kind === "comment") {
+              t.replies = Array.isArray(t.replies) ? t.replies : [];
               byId.set(t.id, t);
             }
           }
@@ -165,21 +222,15 @@ window.OldReddit = window.OldReddit || {};
               roots.push(t);
               continue;
             }
-            if (t.kind !== "comment" || !isValidComment(t)) continue;
+            if (t.kind !== "comment") continue;
             const parent = byId.get(t.parentId);
-            if (parent && parent !== t) {
+            if (parent && parent.id !== t.id) {
               parent.replies.push(t);
             } else {
               roots.push(t);
             }
           }
-          for (const t of roots) {
-            const nodeEl = renderComment(t, { linkId, sort });
-            if (nodeEl.nodeType === 1) {
-              frag.appendChild(nodeEl);
-              inserted += 1;
-            }
-          }
+          appendNodes(roots);
         }
 
         if (inserted) {
@@ -188,7 +239,8 @@ window.OldReddit = window.OldReddit || {};
         } else {
           btn.innerHTML = prev;
           btn.dataset.loading = "0";
-          btn.textContent = "no more comments";
+          btn.title = "Reddit returned no comments for this stub";
+          // leave clickable for retry
         }
       } catch (err) {
         console.warn("[OldReddit] morechildren failed", err);
@@ -271,12 +323,13 @@ window.OldReddit = window.OldReddit || {};
   async function mountComments(route) {
     const commentSort = route.commentSort || "confidence";
     const root = OR.shell.createRoot();
-    const { siteTable, status } = OR.shell.renderShell(root, {
+    const shell = OR.shell.renderShell(root, {
       subreddit: route.subreddit,
       sort: "hot",
       mode: "comments",
       commentSort,
     });
+    const { siteTable, status } = shell;
 
     OR.shell.setStatus(status, "Loading comments…");
 
@@ -294,6 +347,15 @@ window.OldReddit = window.OldReddit || {};
         });
         post = data.post;
         comments = data.comments;
+        // Attach live shreddit "more" cursors so load-more works when morechildren is empty
+        const start = Date.now();
+        while (
+          Date.now() - start < 2500 &&
+          !document.querySelector("faceplate-partial[src*='more-comments']")
+        ) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        comments = OR.scrapeComments.attachDomPartialsToMores(comments);
       } catch (err) {
         console.warn("[OldReddit] comments JSON failed, using DOM scrape", err);
         OR.shell.setStatus(status, "Loading comments from page…");
@@ -312,16 +374,24 @@ window.OldReddit = window.OldReddit || {};
 
       const commentArea = document.createElement("div");
       commentArea.className = "commentarea";
-      commentArea.innerHTML = `<div class="panestack-title"><span class="title">all ${post.commentCount ?? ""} comments</span></div>`;
+      commentArea.innerHTML = `
+        <div class="panestack-title"><span class="title">all ${post.commentCount ?? ""} comments</span></div>
+        ${shell.commentSortMenuHtml()}
+      `;
       const nested = document.createElement("div");
       nested.className = "sitetable nestedlisting";
       const linkId = post.id;
       for (const c of comments || []) {
-        const nodeEl = renderComment(c, { linkId, sort: commentSort });
+        const nodeEl = renderComment(c, {
+          linkId,
+          sort: commentSort,
+          subreddit: route.subreddit,
+        });
         if (nodeEl.nodeType === 1) nested.appendChild(nodeEl);
       }
       commentArea.appendChild(nested);
       siteTable.appendChild(commentArea);
+      shell.bindCommentSortSelect();
 
       OR.shell.setStatus(status, "");
     } catch (err) {

@@ -52,32 +52,46 @@ window.OldReddit = window.OldReddit || {};
     return { post, comments };
   }
 
-  async function fetchMoreChildren({ linkId, children, sort = "confidence", depth = 6 }) {
-    const ids = (children || [])
-      .map((id) => String(id).replace(/^t1_/, ""))
-      .filter(Boolean)
-      .slice(0, 100);
-    if (!ids.length) return [];
+  async function fetchMoreChildren({ linkId, children, sort = "confidence", depth = 6, moreId = null }) {
+    const rawIds = (children || []).map((id) => String(id)).filter(Boolean).slice(0, 100);
+    if (!rawIds.length) return [];
+    // API accepts bare ids; some clients send t1_ — try bare first.
+    const ids = rawIds.map((id) => id.replace(/^t1_/, ""));
     const body = new URLSearchParams({
       api_type: "json",
       link_id: linkId.startsWith("t3_") ? linkId : `t3_${linkId}`,
       children: ids.join(","),
       sort,
       raw_json: "1",
-      depth: String(depth),
+      depth: String(Math.max(2, depth || 6)),
     });
-    const res = await fetch("/api/morechildren", {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json",
-      },
-      body,
-    });
-    if (!res.ok) throw new Error(`morechildren HTTP ${res.status}`);
-    const json = await res.json();
-    const things = json?.json?.data?.things || [];
+    if (moreId) body.set("id", String(moreId).replace(/^t1_/, ""));
+
+    const tryFetch = async (params) => {
+      const res = await fetch("/api/morechildren", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+        },
+        body: params,
+      });
+      if (!res.ok) throw new Error(`morechildren HTTP ${res.status}`);
+      const json = await res.json();
+      if (json?.json?.errors?.length) {
+        console.warn("[OldReddit] morechildren errors", json.json.errors);
+      }
+      return json?.json?.data?.things || [];
+    };
+
+    let things = await tryFetch(body);
+    if (!things.length) {
+      // Retry with t1_ prefixes
+      const body2 = new URLSearchParams(body);
+      body2.set("children", ids.map((id) => `t1_${id}`).join(","));
+      things = await tryFetch(body2);
+    }
     return things.map(normalizeThing).filter(Boolean);
   }
 
@@ -127,7 +141,23 @@ window.OldReddit = window.OldReddit || {};
     );
     const thumbField = cleanUrl(d.thumbnail);
     const galleryThumb = galleryThumbFromMetadata(d);
-    const thumb = thumbField || previewRes || previewSource || galleryThumb || null;
+    const oembedThumb = cleanUrl(
+      d.media?.oembed?.thumbnail_url ||
+        d.secure_media?.oembed?.thumbnail_url ||
+        d.preview?.reddit_video_preview?.scrubber_media_url
+    );
+    const crossThumb = (() => {
+      const p = d.crosspost_parent_list?.[0];
+      if (!p) return null;
+      return (
+        cleanUrl(p.thumbnail) ||
+        cleanUrl(p.preview?.images?.[0]?.source?.url) ||
+        cleanUrl(p.media?.oembed?.thumbnail_url) ||
+        galleryThumbFromMetadata(p)
+      );
+    })();
+    const thumb =
+      thumbField || previewRes || previewSource || galleryThumb || oembedThumb || crossThumb || null;
 
     let mediaHtml = null;
     let selftextHtml = d.selftext_html || null;
@@ -159,6 +189,8 @@ window.OldReddit = window.OldReddit || {};
         })
         .filter(Boolean);
       mediaHtml = { type: "gallery", items };
+    } else if (previewSource || oembedThumb) {
+      mediaHtml = { type: "image", url: previewSource || oembedThumb };
     }
 
     return {
@@ -405,11 +437,100 @@ window.OldReddit = window.OldReddit || {};
     };
   }
 
+  async function fetchShredditListing({ subreddit, sort = "hot", t = null, after = null }) {
+    const params = new URLSearchParams({ name: subreddit });
+    if (after) params.set("after", after);
+    if (t && (sort === "top" || sort === "controversial")) params.set("t", t);
+    const url = `/svc/shreddit/community-more-posts/${encodeURIComponent(sort)}/?${params}`;
+    const res = await fetch(url, {
+      credentials: "include",
+      headers: { Accept: "text/html, */*;q=0.8" },
+    });
+    if (!res.ok) throw new Error(`shreddit listing HTTP ${res.status}`);
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const posts = [];
+    const seen = new Set();
+    for (const el of doc.querySelectorAll("shreddit-post")) {
+      const post = postFromShredditEl(el);
+      if (!post || seen.has(post.id)) continue;
+      seen.add(post.id);
+      posts.push(post);
+    }
+    // Regex fallback for attributes when custom elements are inert in DOMParser
+    if (!posts.length) {
+      const re = /<shreddit-post\b([^>]*\bid="(t3_[^"]+)"[^>]*)>/gi;
+      let m;
+      while ((m = re.exec(html))) {
+        const attrs = m[1];
+        const id = m[2];
+        if (seen.has(id)) continue;
+        const get = (name) => {
+          const mm = attrs.match(new RegExp(`${name}="([^"]*)"`, "i"));
+          return mm ? mm[1].replace(/&amp;/g, "&") : null;
+        };
+        const title = get("post-title");
+        if (!title) continue;
+        seen.add(id);
+        const postType = (get("post-type") || "link").toLowerCase();
+        // Pull nearby preview image from following chunk
+        const chunk = html.slice(m.index, m.index + 8000);
+        const imgMatch =
+          chunk.match(/srcset="(https:\/\/preview\.redd\.it[^"\s]+)/i) ||
+          chunk.match(/src="(https:\/\/(?:preview|i|external-preview)\.redd\.it[^"]+)"/i) ||
+          chunk.match(/poster="(https:\/\/[^"]+)"/i);
+        const thumbnail = imgMatch ? imgMatch[1].replace(/&amp;/g, "&") : null;
+        posts.push({
+          id,
+          postId: id.replace(/^t3_/, ""),
+          title,
+          author: get("author") || "[deleted]",
+          score: Number(get("score") || 0),
+          commentCount: Number(get("comment-count") || 0),
+          created: get("created-timestamp") || "",
+          permalink: get("permalink") || "",
+          url: get("content-href") || get("permalink") || "",
+          domain: get("domain") || "reddit.com",
+          subreddit: get("subreddit-name") || subreddit,
+          stickied: false,
+          nsfw: false,
+          spoiler: false,
+          flair: null,
+          flairColor: null,
+          postType,
+          thumbnail,
+          selftext: "",
+          selftextHtml: null,
+          media: thumbnail ? { type: "image", url: thumbnail } : null,
+          promoted: false,
+          _source: "shreddit-html",
+        });
+      }
+    }
+    return { posts };
+  }
+
+  async function fetchCommentBranch({ subreddit, postId, commentId, sort = "confidence", depth = 8 }) {
+    const cid = String(commentId).replace(/^t1_/, "");
+    const params = new URLSearchParams({
+      raw_json: "1",
+      limit: "100",
+      depth: String(depth),
+      sort,
+    });
+    const url = `/r/${encodeURIComponent(subreddit)}/comments/${encodeURIComponent(postId)}/_/${encodeURIComponent(cid)}.json?${params}`;
+    const data = await fetchJson(url);
+    const listing = data?.[1]?.data?.children || [];
+    return listing.map(normalizeThing).filter(Boolean);
+  }
+
   OR.api = {
     fetchJson,
     fetchListing,
     fetchComments,
     fetchMoreChildren,
+    fetchShredditListing,
+    fetchCommentBranch,
     listingUrl,
     commentsUrl,
     normalizeLink,
