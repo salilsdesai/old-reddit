@@ -22,6 +22,12 @@ window.OldReddit = window.OldReddit || {};
     row.dataset.permalink = post.permalink;
 
     const thumbHref = post.postType === "text" ? post.permalink : post.url || post.permalink;
+    // Title goes to media/source for non-text posts; comments are via the comments link only.
+    const titleHref =
+      post.postType === "text"
+        ? post.permalink
+        : post.url || post.media?.url || post.media?.fallbackUrl || post.permalink;
+    const titleExternal = post.postType !== "text" && titleHref && titleHref !== post.permalink;
     const thumbUrl =
       post.thumbnail ||
       post.media?.poster ||
@@ -63,7 +69,9 @@ window.OldReddit = window.OldReddit || {};
         <div class="top-matter">
           <p class="title">
             ${flair}
-            <a class="title may-blank" href="${escapeAttr(post.permalink)}">${escapeHtml(post.title)}</a>
+            <a class="title may-blank" href="${escapeAttr(titleHref)}" ${
+              titleExternal ? 'target="_blank" rel="noopener noreferrer ugc"' : ""
+            }>${escapeHtml(post.title)}</a>
           </p>
           ${expandoBtn}
           <p class="tagline">

@@ -52,5 +52,13 @@
   history.replaceState = wrap(history.replaceState.bind(history));
   window.addEventListener("popstate", () => boot("popstate"));
 
-  setInterval(() => boot("poll"), 1000);
+  setInterval(() => {
+    boot("poll");
+    if (
+      document.documentElement.classList.contains("old-reddit-active") &&
+      OR.expando?.silenceForeignMedia
+    ) {
+      OR.expando.silenceForeignMedia();
+    }
+  }, 1000);
 })();

@@ -41,7 +41,8 @@
   ],
   "host_permissions": [
     "*://*.reddit.com/*",
-    "*://reddit.com/*"
+    "*://reddit.com/*",
+    "*://*.redd.it/*"
   ],
   "web_accessible_resources": [
     {
