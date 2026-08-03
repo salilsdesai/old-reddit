@@ -7,7 +7,6 @@ window.OldReddit = window.OldReddit || {};
       root = document.createElement("div");
       root.id = "old-reddit-root";
       document.documentElement.appendChild(root);
-      // Prefer body once available
       if (document.body) {
         document.body.appendChild(root);
       } else {
@@ -21,21 +20,70 @@ window.OldReddit = window.OldReddit || {};
     return root;
   }
 
-  function renderShell(root, { subreddit, sort = "hot", t = null, mode }) {
+  const TOP_TIMES = [
+    { value: "hour", label: "past hour" },
+    { value: "day", label: "past 24 hours" },
+    { value: "week", label: "past week" },
+    { value: "month", label: "past month" },
+    { value: "year", label: "past year" },
+    { value: "all", label: "all time" },
+  ];
+
+  const COMMENT_SORTS = [
+    { value: "confidence", label: "best" },
+    { value: "top", label: "top" },
+    { value: "new", label: "new" },
+    { value: "controversial", label: "controversial" },
+    { value: "old", label: "old" },
+    { value: "qa", label: "q&a" },
+  ];
+
+  function renderShell(root, { subreddit, sort = "hot", t = null, mode, commentSort = "confidence" }) {
     const tabs = ["hot", "new", "rising", "controversial", "top"];
     const tabHtml = tabs
       .map((name) => {
-        const selected = name === sort ? " class=\"selected\"" : "";
+        const selected = mode === "feed" && name === sort ? ' class="selected"' : "";
         let href = `/r/${encodeURIComponent(subreddit)}/${name}/`;
-        if (name === "top" && t) href += `?t=${encodeURIComponent(t)}`;
+        if (name === "top") {
+          const tv = t || "day";
+          href += `?t=${encodeURIComponent(tv)}`;
+        }
         return `<li${selected}><a href="${href}">${name}</a></li>`;
       })
       .join("");
 
+    let extraMenus = "";
+    if (mode === "feed" && sort === "top") {
+      const current = t || "day";
+      const options = TOP_TIMES.map(
+        (opt) =>
+          `<option value="${opt.value}" ${opt.value === current ? "selected" : ""}>${opt.label}</option>`
+      ).join("");
+      extraMenus = `
+        <div class="or-menu-bar">
+          <label class="or-dropdown-label">links from
+            <select id="or-top-time" class="or-dropdown">${options}</select>
+          </label>
+        </div>`;
+    }
+
+    if (mode === "comments") {
+      const options = COMMENT_SORTS.map(
+        (opt) =>
+          `<option value="${opt.value}" ${opt.value === commentSort ? "selected" : ""}>${opt.label}</option>`
+      ).join("");
+      extraMenus = `
+        <div class="or-menu-bar">
+          <label class="or-dropdown-label">sorted by:
+            <select id="or-comment-sort" class="or-dropdown">${options}</select>
+          </label>
+        </div>`;
+    }
+
     root.innerHTML = `
       <div id="header" role="banner">
         <div id="header-bottom-left">
-          <a href="/" id="header-img-a" title="reddit.com">
+          <a href="/r/${OR.expando.escapeAttr(subreddit)}/" id="header-img-a" title="reddit.com">
             <span id="header-img" class="default-header" role="presentation">reddit</span>
           </a>
           <span class="hover pagename redditname">
@@ -43,15 +91,30 @@ window.OldReddit = window.OldReddit || {};
           </span>
           <ul class="tabmenu">${tabHtml}</ul>
         </div>
-        <div id="header-bottom-right">
-          <span class="user">want to join? <a href="https://www.reddit.com/login/" class="login-required login-link">log in</a> or <a href="https://www.reddit.com/register/">sign up</a></span>
-        </div>
       </div>
       <div class="or-status" id="or-status" hidden></div>
+      ${extraMenus}
       <div class="content" role="main">
         <div id="siteTable" class="sitetable ${mode === "comments" ? "nestedlisting" : "linklisting"}"></div>
       </div>
     `;
+
+    const topSelect = root.querySelector("#or-top-time");
+    if (topSelect) {
+      topSelect.addEventListener("change", () => {
+        const next = topSelect.value;
+        location.assign(`/r/${encodeURIComponent(subreddit)}/top/?t=${encodeURIComponent(next)}`);
+      });
+    }
+
+    const sortSelect = root.querySelector("#or-comment-sort");
+    if (sortSelect) {
+      sortSelect.addEventListener("change", () => {
+        const url = new URL(location.href);
+        url.searchParams.set("sort", sortSelect.value);
+        location.assign(url.toString());
+      });
+    }
 
     return {
       siteTable: root.querySelector("#siteTable"),
@@ -71,5 +134,5 @@ window.OldReddit = window.OldReddit || {};
     el.classList.toggle("or-status-error", error);
   }
 
-  OR.shell = { createRoot, renderShell, setStatus };
+  OR.shell = { createRoot, renderShell, setStatus, TOP_TIMES, COMMENT_SORTS };
 })(window.OldReddit);

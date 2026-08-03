@@ -53,10 +53,15 @@ window.OldReddit = window.OldReddit || {};
   }
 
   async function fetchMoreChildren({ linkId, children, sort = "confidence", depth = 6 }) {
+    const ids = (children || [])
+      .map((id) => String(id).replace(/^t1_/, ""))
+      .filter(Boolean)
+      .slice(0, 100);
+    if (!ids.length) return [];
     const body = new URLSearchParams({
       api_type: "json",
-      link_id: linkId,
-      children: children.join(","),
+      link_id: linkId.startsWith("t3_") ? linkId : `t3_${linkId}`,
+      children: ids.join(","),
       sort,
       raw_json: "1",
       depth: String(depth),
@@ -76,15 +81,35 @@ window.OldReddit = window.OldReddit || {};
     return things.map(normalizeThing).filter(Boolean);
   }
 
+  function cleanUrl(u) {
+    if (!u || typeof u !== "string") return null;
+    const decoded = u.replace(/&amp;/g, "&").trim();
+    if (!/^https?:\/\//i.test(decoded)) return null;
+    return decoded;
+  }
+
+  function galleryThumbFromMetadata(d) {
+    if (!d?.media_metadata) return null;
+    const ids = d.gallery_data?.items?.map((i) => i.media_id) || Object.keys(d.media_metadata);
+    for (const id of ids) {
+      const meta = d.media_metadata[id];
+      if (!meta) continue;
+      const fromP = meta.p?.length ? meta.p[Math.min(2, meta.p.length - 1)]?.u : null;
+      const src = cleanUrl(fromP || meta.s?.u || meta.s?.gif || meta.s?.mp4);
+      if (src) return src;
+    }
+    return null;
+  }
+
   function normalizeLink(d) {
     if (!d || !d.title || d.promoted) return null;
 
     const postHint = d.post_hint || "";
-    const isVideo = !!(d.is_video || postHint === "hosted:video" || d.media?.reddit_video);
+    const isVideo = !!(d.is_video || postHint === "hosted:video" || d.media?.reddit_video || d.secure_media?.reddit_video);
     const isImage =
       postHint === "image" ||
       /\.(jpg|jpeg|png|gif|webp)$/i.test(d.url || "") ||
-      (d.domain === "i.redd.it");
+      d.domain === "i.redd.it";
     const isGallery = !!(d.is_gallery || d.gallery_data);
     const isSelf = !!d.is_self;
 
@@ -95,37 +120,42 @@ window.OldReddit = window.OldReddit || {};
     else if (isImage) postType = "image";
 
     const previewImages = d.preview?.images?.[0];
-    const thumb =
-      (typeof d.thumbnail === "string" && d.thumbnail.startsWith("http") && d.thumbnail) ||
-      previewImages?.resolutions?.[0]?.url ||
-      previewImages?.source?.url ||
-      null;
+    const previewSource = cleanUrl(previewImages?.source?.url);
+    const previewRes = cleanUrl(
+      previewImages?.resolutions?.[Math.min(2, (previewImages?.resolutions?.length || 1) - 1)]?.url ||
+        previewImages?.resolutions?.[0]?.url
+    );
+    const thumbField = cleanUrl(d.thumbnail);
+    const galleryThumb = galleryThumbFromMetadata(d);
+    const thumb = thumbField || previewRes || previewSource || galleryThumb || null;
 
     let mediaHtml = null;
     let selftextHtml = d.selftext_html || null;
     let selftext = d.selftext || "";
 
-    if (isVideo && d.media?.reddit_video) {
-      const v = d.media.reddit_video;
+    const redditVideo = d.media?.reddit_video || d.secure_media?.reddit_video;
+    if (isVideo && redditVideo) {
       mediaHtml = {
         type: "video",
-        fallbackUrl: v.fallback_url,
-        hlsUrl: v.hls_url,
-        width: v.width,
-        height: v.height,
-        poster: previewImages?.source?.url || thumb,
+        fallbackUrl: redditVideo.fallback_url,
+        hlsUrl: redditVideo.hls_url,
+        width: redditVideo.width,
+        height: redditVideo.height,
+        poster: previewSource || thumb,
       };
     } else if (isImage) {
       mediaHtml = {
         type: "image",
-        url: previewImages?.source?.url || d.url,
+        url: previewSource || cleanUrl(d.url) || thumb,
       };
-    } else if (isGallery && d.gallery_data && d.media_metadata) {
-      const items = d.gallery_data.items
-        .map((item) => {
-          const meta = d.media_metadata[item.media_id];
-          const src = meta?.s?.u || meta?.s?.gif || null;
-          return src ? { url: src.replace(/&amp;/g, "&"), caption: item.caption || "" } : null;
+    } else if (isGallery && d.media_metadata) {
+      const ids = d.gallery_data?.items?.map((i) => i.media_id) || Object.keys(d.media_metadata);
+      const items = ids
+        .map((id, idx) => {
+          const meta = d.media_metadata[id];
+          const src = cleanUrl(meta?.s?.u || meta?.s?.gif || meta?.p?.slice(-1)?.[0]?.u);
+          const caption = d.gallery_data?.items?.[idx]?.caption || "";
+          return src ? { url: src, caption } : null;
         })
         .filter(Boolean);
       mediaHtml = { type: "gallery", items };
@@ -139,7 +169,7 @@ window.OldReddit = window.OldReddit || {};
       score: d.score,
       upvoteRatio: d.upvote_ratio,
       commentCount: d.num_comments,
-      created: d.created_utc * 1000,
+      created: d.created_utc != null ? d.created_utc * 1000 : null,
       permalink: d.permalink,
       url: d.url,
       domain: d.domain,
@@ -181,17 +211,25 @@ window.OldReddit = window.OldReddit || {};
 
   function normalizeComment(d) {
     if (!d) return null;
+    // Skip empty stubs from broken morechildren payloads
+    if (!d.id && !d.name) return null;
+    if (d.author == null && !d.body && !d.body_html) return null;
+
     let replies = [];
     if (d.replies && typeof d.replies === "object") {
       replies = (d.replies.data?.children || []).map(normalizeThing).filter(Boolean);
     }
+    const created =
+      d.created_utc != null && Number.isFinite(Number(d.created_utc))
+        ? Number(d.created_utc) * 1000
+        : null;
     return {
       kind: "comment",
       id: d.name || `t1_${d.id}`,
       commentId: d.id,
-      author: d.author,
-      score: d.score,
-      created: d.created_utc * 1000,
+      author: d.author || "[deleted]",
+      score: d.score ?? 0,
+      created,
       body: d.body || "",
       bodyHtml: d.body_html || "",
       permalink: d.permalink,
@@ -201,6 +239,40 @@ window.OldReddit = window.OldReddit || {};
       isSubmitter: !!d.is_submitter,
       replies,
     };
+  }
+
+  function imgUrlFromEl(img) {
+    if (!img) return null;
+    const candidates = [
+      img.currentSrc,
+      img.getAttribute("src"),
+      img.getAttribute("data-lazy-src"),
+      img.getAttribute("data-src"),
+    ];
+    const srcset = img.getAttribute("srcset") || img.getAttribute("data-lazy-srcset") || "";
+    if (srcset) {
+      // Prefer a mid-size candidate from srcset
+      const parts = srcset.split(",").map((s) => s.trim().split(/\s+/)[0]).filter(Boolean);
+      if (parts.length) candidates.push(parts[Math.min(1, parts.length - 1)], parts[0]);
+    }
+    for (const c of candidates) {
+      const u = cleanUrl(c);
+      if (u && !/avatar|snoovatar|emoji|award|icon/i.test(u)) return u;
+    }
+    return null;
+  }
+
+  function collectImgsDeep(root, out = []) {
+    if (!root) return out;
+    if (root.querySelectorAll) {
+      root.querySelectorAll("img").forEach((img) => out.push(img));
+    }
+    const walk = root.querySelectorAll ? root.querySelectorAll("*") : [];
+    for (const el of walk) {
+      if (el.shadowRoot) collectImgsDeep(el.shadowRoot, out);
+    }
+    if (root.shadowRoot) collectImgsDeep(root.shadowRoot, out);
+    return out;
   }
 
   /** Convert a scraped shreddit-post element into our post model (partial). */
@@ -228,11 +300,35 @@ window.OldReddit = window.OldReddit || {};
       el.getAttribute("subreddit-prefixed-name")?.replace(/^r\//, "") ||
       "";
 
+    const allImgs = collectImgsDeep(el);
     let thumbnail = null;
-    const thumbImg =
-      el.querySelector('[slot="thumbnail"] img') ||
-      el.querySelector("img[src*='preview'], img[src*='i.redd'], img[src*='external-preview']");
-    if (thumbImg?.src) thumbnail = thumbImg.src;
+    const thumbSlotImg = el.querySelector('[slot="thumbnail"] img');
+    thumbnail = imgUrlFromEl(thumbSlotImg);
+    if (!thumbnail) {
+      for (const img of allImgs) {
+        const u = imgUrlFromEl(img);
+        if (u && /preview\.redd\.it|i\.redd\.it|external-preview|v\.redd\.it/i.test(u)) {
+          thumbnail = u;
+          break;
+        }
+      }
+    }
+    if (!thumbnail) {
+      for (const img of allImgs) {
+        const u = imgUrlFromEl(img);
+        if (u) {
+          thumbnail = u;
+          break;
+        }
+      }
+    }
+
+    // Player poster attribute
+    if (!thumbnail) {
+      const player = el.querySelector("shreddit-player, [poster]");
+      const poster = cleanUrl(player?.getAttribute?.("poster"));
+      if (poster) thumbnail = poster;
+    }
 
     let selftext = "";
     let selftextHtml = null;
@@ -244,30 +340,41 @@ window.OldReddit = window.OldReddit || {};
 
     let media = null;
     const mediaSlot = el.querySelector('[slot="post-media-container"]');
-    if (mediaSlot) {
-      const img = mediaSlot.querySelector("img");
-      const video = mediaSlot.querySelector("video");
-      if (video) {
-        media = {
-          type: "video",
-          fallbackUrl: video.currentSrc || video.src || contentHref,
-          poster: video.getAttribute("poster") || img?.src || thumbnail,
-        };
-      } else if (img) {
-        media = { type: "image", url: img.currentSrc || img.src };
-        if (!thumbnail) thumbnail = img.src;
-      } else if (contentHref) {
-        media = { type: postType === "video" ? "video" : "image", url: contentHref, fallbackUrl: contentHref };
-      }
-    } else if (contentHref && (postType === "image" || postType === "video")) {
+    const mediaImgs = mediaSlot ? collectImgsDeep(mediaSlot) : allImgs;
+    const video =
+      el.querySelector("video") ||
+      (el.shadowRoot && el.shadowRoot.querySelector("video"));
+    const player = el.querySelector("shreddit-player");
+    if (postType === "video" || video || player) {
       media = {
-        type: postType,
-        url: contentHref,
-        fallbackUrl: contentHref,
+        type: "video",
+        fallbackUrl:
+          cleanUrl(player?.getAttribute("src")) ||
+          video?.currentSrc ||
+          video?.src ||
+          contentHref,
+        poster: cleanUrl(player?.getAttribute("poster")) || thumbnail,
       };
+    } else if (postType === "gallery" || postType === "image") {
+      const urls = [];
+      for (const img of mediaImgs) {
+        const u = imgUrlFromEl(img);
+        if (u && !urls.includes(u)) urls.push(u);
+      }
+      if (urls.length > 1) {
+        media = { type: "gallery", items: urls.map((url) => ({ url, caption: "" })) };
+      } else if (urls.length === 1) {
+        media = { type: "image", url: urls[0] };
+      } else if (contentHref) {
+        media = { type: postType === "gallery" ? "gallery" : "image", url: contentHref, items: [] };
+      }
+      if (!thumbnail && urls[0]) thumbnail = urls[0];
+    } else if (contentHref && (postType === "image" || postType === "video")) {
+      media = { type: postType, url: contentHref, fallbackUrl: contentHref };
     }
 
-    const stickied = !!el.querySelector('[slot="title"] svg, [aria-label*="pin" i]') ||
+    const stickied =
+      !!el.querySelector('[slot="title"] svg, [aria-label*="pin" i]') ||
       el.hasAttribute("pinned") ||
       el.getAttribute("distinguish-type") === "sticky";
 

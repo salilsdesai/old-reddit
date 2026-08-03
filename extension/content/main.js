@@ -8,7 +8,7 @@
   function routeKey(r = OR.router.detect()) {
     if (r.type === "ignore") return "ignore:" + location.pathname;
     if (r.type === "feed") return `feed:${r.subreddit}:${r.sort}:${r.t || ""}`;
-    if (r.type === "comments") return `comments:${r.subreddit}:${r.postId}`;
+    if (r.type === "comments") return `comments:${r.subreddit}:${r.postId}:${r.commentSort || "confidence"}`;
     return location.pathname + location.search;
   }
 

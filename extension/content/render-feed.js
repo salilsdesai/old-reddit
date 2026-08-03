@@ -117,11 +117,43 @@ window.OldReddit = window.OldReddit || {};
     const seen = new Set();
 
     const addPosts = (posts) => {
-      const fresh = posts.filter((p) => {
-        if (!p?.id || seen.has(p.id) || p.promoted) return false;
+      const fresh = [];
+      for (const p of posts) {
+        if (!p?.id || p.promoted) continue;
+        if (seen.has(p.id)) {
+          // Enrich missing thumbnails on already-rendered rows
+          if (p.thumbnail) {
+            const row = siteTable.querySelector(`#thing_${CSS.escape(p.id)}`);
+            const img = row?.querySelector("a.thumbnail img");
+            const placeholder = row?.querySelector("a.thumbnail .or-thumb-placeholder");
+            if (row && !img && placeholder && p.thumbnail) {
+              const a = placeholder.parentElement;
+              placeholder.replaceWith(
+                Object.assign(document.createElement("img"), {
+                  src: p.thumbnail,
+                  width: 70,
+                  height: 70,
+                  alt: "",
+                })
+              );
+            } else if (row && !img && !placeholder && p.thumbnail) {
+              const thumb = row.querySelector("a.thumbnail");
+              if (thumb && !thumb.querySelector("img")) {
+                thumb.innerHTML = "";
+                const image = document.createElement("img");
+                image.src = p.thumbnail;
+                image.width = 70;
+                image.height = 70;
+                image.alt = "";
+                thumb.appendChild(image);
+              }
+            }
+          }
+          continue;
+        }
         seen.add(p.id);
-        return true;
-      });
+        fresh.push(p);
+      }
       if (!fresh.length) return;
       nextRank = appendPosts(siteTable, fresh, nextRank);
       OR.shell.setStatus(status, "");

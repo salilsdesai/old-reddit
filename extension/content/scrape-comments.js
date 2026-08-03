@@ -10,6 +10,11 @@ window.OldReddit = window.OldReddit || {};
     const id = el.getAttribute("thingid") || el.getAttribute("id");
     if (!id || !id.startsWith("t1_")) return null;
 
+    const authorAttr = el.getAttribute("author");
+    const createdAttr = el.getAttribute("created");
+    // Ignore placeholder custom elements with no real payload
+    if (authorAttr == null && createdAttr == null) return null;
+
     const bodySlot = textFromSlot(el, "comment");
     let bodyHtml = "";
     let body = "";
@@ -22,9 +27,10 @@ window.OldReddit = window.OldReddit || {};
     }
 
     const depth = Number(el.getAttribute("depth") || 0);
-    const score = Number(el.getAttribute("score") || 0);
-    const author = el.getAttribute("author") || "[deleted]";
-    const created = el.getAttribute("created") || "";
+    const scoreRaw = el.getAttribute("score");
+    const score = scoreRaw == null || scoreRaw === "" ? 0 : Number(scoreRaw);
+    const author = authorAttr || "[deleted]";
+    const created = createdAttr || "";
     const permalink = el.getAttribute("permalink") || "";
     const parentId = el.getAttribute("parentid") || null;
     const postId = el.getAttribute("postid") || null;
@@ -141,17 +147,20 @@ window.OldReddit = window.OldReddit || {};
     for (const el of doc.querySelectorAll("shreddit-comment")) {
       // Only top-level of this fragment
       if (el.parentElement?.closest("shreddit-comment")) continue;
+      // Must have real identity attrs in the markup
+      if (!el.getAttribute("thingid")?.startsWith("t1_")) continue;
+      if (!el.getAttribute("author") && !el.getAttribute("created")) continue;
       const c = commentFromShredditEl(el);
       if (c && !seen.has(c.id)) {
         seen.add(c.id);
         out.push(c);
       }
     }
-    // Also collect more partials at fragment root
     const mores = [];
     for (const partial of doc.querySelectorAll("faceplate-partial")) {
       const src = partial.getAttribute("src");
       if (src && src.includes("more-comments")) {
+        // Prefer partials not nested under a comment we already parsed as child-owned
         mores.push({
           src: src.replace(/&amp;/g, "&"),
           method: (partial.getAttribute("method") || "post").toLowerCase(),

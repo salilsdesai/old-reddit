@@ -13,6 +13,17 @@ window.OldReddit = window.OldReddit || {};
     return n;
   }
 
+  function isValidComment(node) {
+    if (!node || node.kind !== "comment") return false;
+    if (!node.id || !String(node.id).startsWith("t1_")) return false;
+    // Reject empty shells from bad partial parses
+    const hasBody = !!(node.body || node.bodyHtml);
+    const hasAuthor = !!(node.author && node.author !== "[deleted]");
+    const hasTime = node.created != null && Number.isFinite(OR.time.parseTimestamp(node.created));
+    if (!hasBody && !hasAuthor && !hasTime) return false;
+    return true;
+  }
+
   function renderComment(node, { linkId, sort }) {
     const { escapeHtml, escapeAttr, decodeHtml } = OR.expando;
     const { relativeTime, absoluteTitle } = OR.time;
@@ -20,6 +31,7 @@ window.OldReddit = window.OldReddit || {};
     if (node.kind === "more") {
       return renderMore(node, { linkId, sort });
     }
+    if (!isValidComment(node)) return document.createDocumentFragment();
 
     const el = document.createElement("div");
     el.className = `thing id-${node.id} comment noncollapsed`;
@@ -28,7 +40,7 @@ window.OldReddit = window.OldReddit || {};
     el.dataset.type = "comment";
 
     const childCount = countChildren(node.replies);
-    const timeLabel = relativeTime(node.created);
+    const timeLabel = relativeTime(node.created) || "";
     const timeTitle = absoluteTitle(node.created);
     const body = node.bodyHtml
       ? decodeHtml(node.bodyHtml)
@@ -44,7 +56,7 @@ window.OldReddit = window.OldReddit || {};
           <a href="javascript:void(0)" class="expand" role="button">[–]</a>
           <a href="/user/${escapeAttr(node.author)}/" class="author ${node.isSubmitter ? "submitter" : ""}">${escapeHtml(node.author || "[deleted]")}</a>
           <span class="score unvoted">${escapeHtml(String(node.score ?? 0))} points</span>
-          <time class="live-timestamp" title="${escapeAttr(timeTitle)}">${escapeHtml(timeLabel)}</time>
+          ${timeLabel ? `<time class="live-timestamp" title="${escapeAttr(timeTitle)}">${escapeHtml(timeLabel)}</time>` : ""}
           <a href="${escapeAttr(node.permalink || "#")}" class="numchildren">(${childCount} ${childCount === 1 ? "child" : "children"})</a>
         </p>
         <form class="usertext">
@@ -59,7 +71,8 @@ window.OldReddit = window.OldReddit || {};
 
     const childListing = el.querySelector(".child > .sitetable");
     for (const reply of node.replies || []) {
-      childListing.appendChild(renderComment(reply, { linkId, sort }));
+      const child = renderComment(reply, { linkId, sort });
+      if (child.childNodes?.length || child.nodeType === 1) childListing.appendChild(child);
     }
 
     const expandBtn = el.querySelector("a.expand");
@@ -81,7 +94,6 @@ window.OldReddit = window.OldReddit || {};
   }
 
   function renderMore(node, { linkId, sort }) {
-    const { escapeHtml } = OR.expando;
     const el = document.createElement("div");
     el.className = "thing morechildren";
     el.dataset.type = "morechildren";
@@ -102,63 +114,82 @@ window.OldReddit = window.OldReddit || {};
       e.preventDefault();
       if (btn.dataset.loading === "1") return;
       btn.dataset.loading = "1";
+      const prev = btn.innerHTML;
       btn.textContent = "loading...";
       try {
-        // Prefer shreddit partial if present (DOM fallback path)
+        const parentListing = el.parentElement;
+        const frag = document.createDocumentFragment();
+        let inserted = 0;
+
         if (node._partial?.src) {
           const html = await OR.scrapeComments.fetchPartialHtml(
             node._partial.src,
             node._partial.method || "post"
           );
-          const { comments: fetched } = OR.scrapeComments.parseCommentsFromHtml(html);
-          const parentListing = el.parentElement;
-          const frag = document.createDocumentFragment();
+          let { comments: fetched } = OR.scrapeComments.parseCommentsFromHtml(html);
+          // Optionally deepen one level of nested partials inside fetched tree
+          fetched = await OR.scrapeComments.deepenForest(fetched, {
+            depthLimit: 6,
+            maxRequests: 8,
+            topMore: [],
+          });
           for (const t of fetched) {
-            frag.appendChild(renderComment(t, { linkId, sort }));
+            const nodeEl = renderComment(t, { linkId, sort });
+            if (nodeEl.nodeType === 1) {
+              frag.appendChild(nodeEl);
+              inserted += 1;
+            }
           }
-          parentListing.insertBefore(frag, el);
-          el.remove();
-          return;
+        } else {
+          const ids = (node.children || []).slice(0, 100);
+          if (!ids.length) {
+            el.remove();
+            return;
+          }
+          const things = await OR.api.fetchMoreChildren({
+            linkId,
+            children: ids,
+            sort,
+            depth: 6,
+          });
+          const byId = new Map();
+          const roots = [];
+          for (const t of things) {
+            if (t.kind === "comment" && isValidComment(t)) {
+              t.replies = t.replies || [];
+              byId.set(t.id, t);
+            }
+          }
+          for (const t of things) {
+            if (t.kind === "more") {
+              roots.push(t);
+              continue;
+            }
+            if (t.kind !== "comment" || !isValidComment(t)) continue;
+            const parent = byId.get(t.parentId);
+            if (parent && parent !== t) {
+              parent.replies.push(t);
+            } else {
+              roots.push(t);
+            }
+          }
+          for (const t of roots) {
+            const nodeEl = renderComment(t, { linkId, sort });
+            if (nodeEl.nodeType === 1) {
+              frag.appendChild(nodeEl);
+              inserted += 1;
+            }
+          }
         }
 
-        const ids = (node.children || []).slice(0, 100);
-        if (!ids.length) {
+        if (inserted) {
+          parentListing.insertBefore(frag, el);
           el.remove();
-          return;
+        } else {
+          btn.innerHTML = prev;
+          btn.dataset.loading = "0";
+          btn.textContent = "no more comments";
         }
-        const things = await OR.api.fetchMoreChildren({
-          linkId,
-          children: ids,
-          sort,
-          depth: 6,
-        });
-        const parentListing = el.parentElement;
-        const byId = new Map();
-        const roots = [];
-        for (const t of things) {
-          if (t.kind === "comment") {
-            t.replies = t.replies || [];
-            byId.set(t.id, t);
-          }
-        }
-        for (const t of things) {
-          if (t.kind !== "comment") {
-            roots.push(t);
-            continue;
-          }
-          const parent = byId.get(t.parentId);
-          if (parent) {
-            parent.replies.push(t);
-          } else {
-            roots.push(t);
-          }
-        }
-        const frag = document.createDocumentFragment();
-        for (const t of roots) {
-          frag.appendChild(renderComment(t, { linkId, sort }));
-        }
-        parentListing.insertBefore(frag, el);
-        el.remove();
       } catch (err) {
         console.warn("[OldReddit] morechildren failed", err);
         btn.textContent = "loading failed — click to retry";
@@ -184,18 +215,16 @@ window.OldReddit = window.OldReddit || {};
       : "";
 
     const showExpando = canExpand(post) && post.postType !== "text";
-    // For text posts on comments page, show body expanded directly (classic).
     let bodyBlock = "";
     if (post.postType === "text" || post.selftext || post.selftextHtml) {
       const html = post.selftextHtml
         ? decodeHtml(post.selftextHtml)
         : `<div class="md"><p>${escapeHtml(post.selftext || "")}</p></div>`;
-      bodyBlock = `<div class="expando" style="display:block"><div class="usertext-body may-blank-within md-container">${html}</div></div>`;
+      bodyBlock = `<div class="expando" style="display:block"><div class="usertext-body may-blank-within md-container border">${html}</div></div>`;
     } else if (showExpando) {
       bodyBlock = `<div class="expando-button collapsed ${expandoClass(post)}" role="button" tabindex="0"></div><div class="expando" style="display:none"></div>`;
     }
 
-    // Auto-show media for image/video on comments page
     if (post.media && post.postType !== "text") {
       bodyBlock = `<div class="expando" style="display:block" data-ready="1"></div>`;
     }
@@ -240,11 +269,13 @@ window.OldReddit = window.OldReddit || {};
   }
 
   async function mountComments(route) {
+    const commentSort = route.commentSort || "confidence";
     const root = OR.shell.createRoot();
     const { siteTable, status } = OR.shell.renderShell(root, {
       subreddit: route.subreddit,
       sort: "hot",
       mode: "comments",
+      commentSort,
     });
 
     OR.shell.setStatus(status, "Loading comments…");
@@ -259,7 +290,7 @@ window.OldReddit = window.OldReddit || {};
           postId: route.postId,
           limit: 200,
           depth: 6,
-          sort: "confidence",
+          sort: commentSort,
         });
         post = data.post;
         comments = data.comments;
@@ -286,7 +317,8 @@ window.OldReddit = window.OldReddit || {};
       nested.className = "sitetable nestedlisting";
       const linkId = post.id;
       for (const c of comments || []) {
-        nested.appendChild(renderComment(c, { linkId, sort: "confidence" }));
+        const nodeEl = renderComment(c, { linkId, sort: commentSort });
+        if (nodeEl.nodeType === 1) nested.appendChild(nodeEl);
       }
       commentArea.appendChild(nested);
       siteTable.appendChild(commentArea);

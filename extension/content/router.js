@@ -14,11 +14,24 @@ window.OldReddit = window.OldReddit || {};
     if (!subreddit) return { type: "ignore" };
 
     if (parts[2] === "comments" && parts[3]) {
+      const params = new URLSearchParams(url.search);
+      const sortRaw = (params.get("sort") || "confidence").toLowerCase();
+      const sortMap = {
+        best: "confidence",
+        confidence: "confidence",
+        top: "top",
+        new: "new",
+        controversial: "controversial",
+        old: "old",
+        qa: "qa",
+        "q&a": "qa",
+      };
       return {
         type: "comments",
         subreddit,
         postId: parts[3],
         slug: parts[4] || "",
+        commentSort: sortMap[sortRaw] || "confidence",
         permalink: `/r/${subreddit}/comments/${parts[3]}/${parts[4] || ""}`.replace(/\/$/, "/"),
       };
     }
