@@ -1,8 +1,24 @@
 window.OldReddit = window.OldReddit || {};
 
 (function (OR) {
+  // Every network call gets a hard timeout: a fetch that never settles used to
+  // leave the UI stuck on "Loading…" forever (issue #3). Callers turn the
+  // timeout into a fallback / error message instead of hanging.
+  async function fetchWithTimeout(url, opts = {}, timeoutMs = 20000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...opts, signal: ctrl.signal });
+    } catch (err) {
+      if (err && err.name === "AbortError") throw new Error(`timed out after ${timeoutMs}ms for ${url}`);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function fetchJson(url) {
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       credentials: "include",
       headers: { Accept: "application/json" },
     });
@@ -64,19 +80,28 @@ window.OldReddit = window.OldReddit || {};
       sort,
       raw_json: "1",
       depth: String(Math.max(2, depth || 6)),
+      limit_children: "False",
     });
-    if (moreId) body.set("id", String(moreId).replace(/^t1_/, ""));
+    // Only pass a real more-object id. Synthetic ids we invented locally
+    // ("more_<random>") are not Reddit ids; sending one makes the API reject
+    // the whole request, which used to leave every sibling unloaded (issue #2).
+    const isSyntheticMoreId = !moreId || String(moreId).startsWith("more_");
+    if (moreId && !isSyntheticMoreId) body.set("id", String(moreId).replace(/^t1_/, ""));
 
     const tryFetch = async (params) => {
-      const res = await fetch("/api/morechildren", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Accept: "application/json",
+      const res = await fetchWithTimeout(
+        "/api/morechildren",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Accept: "application/json",
+          },
+          body: params,
         },
-        body: params,
-      });
+        20000
+      );
       if (!res.ok) throw new Error(`morechildren HTTP ${res.status}`);
       const json = await res.json();
       if (json?.json?.errors?.length) {
@@ -85,12 +110,29 @@ window.OldReddit = window.OldReddit || {};
       return json?.json?.data?.things || [];
     };
 
-    let things = await tryFetch(body);
-    if (!things.length) {
-      // Retry with t1_ prefixes
-      const body2 = new URLSearchParams(body);
-      body2.set("children", ids.map((id) => `t1_${id}`).join(","));
-      things = await tryFetch(body2);
+    let things = [];
+    // Try in order: as given, without the id, then with t1_ prefixes. A
+    // failure on one form must not silently drop the whole stub's children.
+    const attempts = [new URLSearchParams(body)];
+    if (!isSyntheticMoreId && body.has("id")) {
+      const noId = new URLSearchParams(body);
+      noId.delete("id");
+      attempts.push(noId);
+    }
+    {
+      const prefixed = new URLSearchParams(body);
+      prefixed.set("children", ids.map((id) => `t1_${id}`).join(","));
+      if (isSyntheticMoreId) prefixed.delete("id");
+      attempts.push(prefixed);
+    }
+    for (const params of attempts) {
+      try {
+        things = await tryFetch(params);
+      } catch (err) {
+        console.warn("[OldReddit] morechildren attempt failed", err);
+        things = [];
+      }
+      if (things.length) break;
     }
     return things.map(normalizeThing).filter(Boolean);
   }
@@ -533,10 +575,14 @@ window.OldReddit = window.OldReddit || {};
     if (after) params.set("after", after);
     if (t && (sort === "top" || sort === "controversial")) params.set("t", t);
     const url = `/svc/shreddit/community-more-posts/${encodeURIComponent(sort)}/?${params}`;
-    const res = await fetch(url, {
-      credentials: "include",
-      headers: { Accept: "text/html, */*;q=0.8" },
-    });
+    const res = await fetchWithTimeout(
+      url,
+      {
+        credentials: "include",
+        headers: { Accept: "text/html, */*;q=0.8" },
+      },
+      20000
+    );
     if (!res.ok) throw new Error(`shreddit listing HTTP ${res.status}`);
     const html = await res.text();
     const doc = new DOMParser().parseFromString(html, "text/html");
@@ -634,6 +680,7 @@ window.OldReddit = window.OldReddit || {};
 
   OR.api = {
     fetchJson,
+    fetchWithTimeout,
     fetchListing,
     fetchComments,
     fetchMoreChildren,

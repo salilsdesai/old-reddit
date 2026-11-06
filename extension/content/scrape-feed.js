@@ -54,33 +54,15 @@ window.OldReddit = window.OldReddit || {};
   }
 
   /**
-   * Drive Shreddit's infinite scroll while our UI is shown.
-   * Scrolls the real window; Shreddit remains in DOM (hidden) and should fetch more.
+   * Formerly drove Shreddit's infinite scroll by jerking the window scroll
+   * position near the bottom. That cannot work anymore: the Shreddit feed
+   * is parked at 1px off-screen, so its IntersectionObserver never fires,
+   * and the scrollTo-back step fought the user's own scrolling. Pagination
+   * is now driven by the feed's own JSON / Shreddit endpoints (render-feed
+   * loadMore). Kept as a no-op for API compatibility; no longer called.
    */
-  function bindInfiniteScrollBridge(getNearBottom) {
-    let ticking = false;
-    const onScroll = () => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => {
-        ticking = false;
-        if (!getNearBottom()) return;
-        // Nudge native scroll height consumers
-        const sh = document.documentElement.scrollHeight;
-        window.dispatchEvent(new Event("scroll"));
-        // Force a tiny scroll on the hidden feed container if present
-        const feed = document.querySelector("shreddit-feed, #main-content, faceplate-tracker");
-        if (feed) {
-          feed.dispatchEvent(new Event("scroll", { bubbles: true }));
-        }
-        // As fallback, briefly reveal scroll by setting scrollTop
-        const prev = window.scrollY;
-        window.scrollTo(0, Math.max(prev, sh - window.innerHeight - 10));
-        window.scrollTo(0, prev);
-      });
-    };
-    document.addEventListener("scroll", onScroll, { passive: true });
-    return () => document.removeEventListener("scroll", onScroll);
+  function bindInfiniteScrollBridge(_getNearBottom) {
+    return () => {};
   }
 
   OR.scrapeFeed = { collectFeedPosts, observeFeed, bindInfiniteScrollBridge };

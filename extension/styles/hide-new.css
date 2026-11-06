@@ -10,16 +10,20 @@ html.old-reddit-pending body {
   overflow: auto !important;
 }
 
+/* Keep Shreddit in the viewport (opacity 0) so IntersectionObservers still
+   fire. Parking it at left:-10000px prevented comment hydration on SPA
+   navigations, so the post page sat on "Loading comments…" until a refresh. */
 html.old-reddit-active body > *:not(#old-reddit-root),
 html.old-reddit-pending body > *:not(#old-reddit-root) {
-  position: absolute !important;
-  left: -10000px !important;
+  position: fixed !important;
+  left: 0 !important;
   top: 0 !important;
-  width: 1px !important;
-  height: 1px !important;
-  overflow: hidden !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  overflow: auto !important;
   opacity: 0 !important;
   pointer-events: none !important;
+  z-index: 0 !important;
 }
 
 html.old-reddit-active #old-reddit-root,

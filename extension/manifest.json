@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Old Reddit",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Restyle reddit.com subreddit feeds and comment threads to look like classic old Reddit.",
   "icons": {
     "16": "icons/icon16.png",

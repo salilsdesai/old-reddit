@@ -648,6 +648,23 @@
   width: 4.4ex;
 }
 
+#old-reddit-root .or-load-more {
+  display: block;
+  margin: 12px 0 20px 10px;
+  padding: 6px 12px;
+  font: normal 12px verdana, arial, helvetica, sans-serif;
+  color: #369;
+  background: #eff7ff;
+  border: 1px solid #5f99cf;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+#old-reddit-root .or-load-more:hover {
+  background: #fff;
+  text-decoration: underline;
+}
+
 /* Hide residual shreddit if any leaks into our root */
 #old-reddit-root shreddit-app,
 #old-reddit-root shreddit-feed {

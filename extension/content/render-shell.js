@@ -20,6 +20,11 @@ window.OldReddit = window.OldReddit || {};
     return root;
   }
 
+  function setModeClass(mode) {
+    document.documentElement.classList.toggle("or-comments-mode", mode === "comments");
+    document.documentElement.classList.toggle("or-feed-mode", mode === "feed");
+  }
+
   const TOP_TIMES = [
     { value: "hour", label: "past hour" },
     { value: "day", label: "past 24 hours" },
@@ -71,6 +76,7 @@ window.OldReddit = window.OldReddit || {};
   }
 
   function renderShell(root, { subreddit, sort = "hot", t = null, mode, commentSort = "confidence" }) {
+    setModeClass(mode);
     const tabs = ["hot", "new", "rising", "controversial", "top"];
     const tabHtml = tabs
       .map((name) => {
@@ -132,21 +138,31 @@ window.OldReddit = window.OldReddit || {};
     };
   }
 
-  function setStatus(el, message, { error = false } = {}) {
+  function setStatus(el, message, { error = false, onRetry = null } = {}) {
     if (!el) return;
     if (!message) {
       el.hidden = true;
       el.textContent = "";
+      el.innerHTML = "";
       return;
     }
     el.hidden = false;
     el.textContent = message;
     el.classList.toggle("or-status-error", error);
+    if (onRetry) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "Retry";
+      btn.style.marginLeft = "8px";
+      btn.addEventListener("click", onRetry);
+      el.appendChild(btn);
+    }
   }
 
   OR.shell = {
     createRoot,
     renderShell,
+    setModeClass,
     setStatus,
     TOP_TIMES,
     COMMENT_SORTS,

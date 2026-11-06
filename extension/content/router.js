@@ -26,11 +26,21 @@ window.OldReddit = window.OldReddit || {};
         qa: "qa",
         "q&a": "qa",
       };
+      let slug = parts[4] || "";
+      let focusCommentId = null;
+      // /r/sub/comments/{post}/comment/{id}/  or  /r/sub/comments/{post}/{slug}/{id}/
+      if (parts[4] === "comment" && parts[5]) {
+        focusCommentId = parts[5];
+        slug = "comment";
+      } else if (parts[5]) {
+        focusCommentId = parts[5];
+      }
       return {
         type: "comments",
         subreddit,
         postId: parts[3],
-        slug: parts[4] || "",
+        slug,
+        focusCommentId,
         commentSort: sortMap[sortRaw] || "confidence",
         permalink: `/r/${subreddit}/comments/${parts[3]}/${parts[4] || ""}`.replace(/\/$/, "/"),
       };
