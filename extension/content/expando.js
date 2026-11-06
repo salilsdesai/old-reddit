@@ -190,11 +190,13 @@ window.OldReddit = window.OldReddit || {};
     } else if (isEmbed) {
       const box = document.createElement("div");
       box.className = "or-embed";
-      box.innerHTML = decodeHtml(post.media.html || "");
+      const raw = post.media.html || "";
+      box.innerHTML = /&lt;\s*iframe/i.test(raw) ? decodeHtml(raw) : raw;
       box.querySelectorAll("iframe").forEach((iframe) => {
         iframe.style.maxWidth = "100%";
         iframe.width = iframe.width || "640";
         iframe.height = iframe.height || "360";
+        iframe.setAttribute("allowfullscreen", "");
       });
       wrap.appendChild(box);
     } else if (isVideo) {
@@ -276,7 +278,7 @@ window.OldReddit = window.OldReddit || {};
 
   function expandoClass(post) {
     if (post.postType === "text") return "selftext";
-    if (post.postType === "video" || post.media?.type === "video") return "video";
+    if (post.postType === "video" || post.media?.type === "video" || post.media?.type === "embed") return "video";
     if (post.postType === "image" || post.postType === "gallery") return "image";
     return "selftext";
   }

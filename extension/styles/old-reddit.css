@@ -459,6 +459,15 @@
   margin: 4px 0;
 }
 
+#old-reddit-root .or-embed iframe {
+  max-width: min(100%, 640px);
+  width: 640px;
+  height: 360px;
+  border: 0;
+  display: block;
+  background: #000;
+}
+
 #old-reddit-root .or-expando-video {
   max-width: min(100%, 640px);
   height: auto;

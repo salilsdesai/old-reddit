@@ -175,6 +175,33 @@ window.OldReddit = window.OldReddit || {};
     return null;
   }
 
+  function streamableId(url) {
+    if (!url) return null;
+    const m = String(url).match(/streamable\.com\/(?:e\/|o\/)?([a-z0-9]+)/i);
+    return m ? m[1] : null;
+  }
+
+  /** Reddit's own Streamable player: embedly iframe (allowed by reddit.com frame-src). */
+  function streamableEmbed(url) {
+    const id = streamableId(url);
+    if (!id) return null;
+    const page = `https://streamable.com/${id}`;
+    const player = `https://streamable.com/o/${id}`;
+    const src =
+      "https://cdn.embedly.com/widgets/media.html?src=" +
+      encodeURIComponent(player) +
+      "&display_name=Streamable&url=" +
+      encodeURIComponent(page) +
+      "&type=text%2Fhtml&schema=streamable";
+    return {
+      type: "embed",
+      url: page,
+      html:
+        `<iframe class="embedly-embed" src="${src}" width="640" height="360" ` +
+        `scrolling="no" frameborder="0" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen></iframe>`,
+    };
+  }
+
   function videoPackFromRedditVideo(rv, poster) {
     if (!rv) return null;
     const fallbackUrl = playableVideoUrl(rv.fallback_url, rv.hls_url, rv.dash_url);
@@ -297,6 +324,9 @@ window.OldReddit = window.OldReddit || {};
         poster: oembedThumb || previewSource || thumb,
         url: cleanUrl(d.url),
       };
+    } else if (streamableEmbed(d.url)) {
+      mediaHtml = streamableEmbed(d.url);
+      if (oembedThumb || previewSource) mediaHtml.poster = oembedThumb || previewSource;
     } else if (previewSource || oembedThumb) {
       // Don't turn hosted video into a still; only use image fallback for true link previews
       mediaHtml = { type: "image", url: previewSource || oembedThumb };
@@ -538,6 +568,16 @@ window.OldReddit = window.OldReddit || {};
       media = { type: postType, url: contentHref, fallbackUrl: playableVideoUrl(contentHref) };
     }
 
+    if (!media) {
+      const embedEl = el.querySelector("shreddit-embed");
+      const embedHtml = embedEl?.getAttribute("html") || "";
+      if (/<iframe/i.test(embedHtml)) {
+        media = { type: "embed", html: embedHtml, url: contentHref || null };
+      } else {
+        media = streamableEmbed(contentHref);
+      }
+    }
+
     const stickied =
       !!el.querySelector('[slot="title"] svg, [aria-label*="pin" i]') ||
       el.hasAttribute("pinned") ||
@@ -621,6 +661,14 @@ window.OldReddit = window.OldReddit || {};
         const playerSrc = chunk.match(/<shreddit-player[^>]+src="([^"]+)"/i);
         const contentHref = get("content-href") || "";
         let media = null;
+        const embedAttr = chunk.match(/<shreddit-embed\b[^>]*\bhtml="([^"]*)"/i);
+        const embedHtml = embedAttr
+          ? embedAttr[1]
+              .replace(/&amp;/g, "&")
+              .replace(/&lt;/g, "<")
+              .replace(/&gt;/g, ">")
+              .replace(/&quot;/g, '"')
+          : "";
         if (postType === "video" || /v\.redd\.it/i.test(contentHref)) {
           media = {
             type: "video",
@@ -631,6 +679,10 @@ window.OldReddit = window.OldReddit || {};
             ),
             poster: thumbnail,
           };
+        } else if (/<iframe/i.test(embedHtml)) {
+          media = { type: "embed", html: embedHtml, url: contentHref || null };
+        } else if (streamableEmbed(contentHref)) {
+          media = streamableEmbed(contentHref);
         } else if (thumbnail) {
           media = { type: "image", url: thumbnail };
         }
@@ -693,6 +745,7 @@ window.OldReddit = window.OldReddit || {};
     normalizeThing,
     postFromShredditEl,
     playableVideoUrl,
+    streamableEmbed,
     vRedditId,
   };
 })(window.OldReddit);
